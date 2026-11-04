@@ -170,8 +170,11 @@ func (s *Store) ConnString() string {
 
 // dataTables are the key tables that follow the UNLOGGED setting. pubsub_messages
 // is always UNLOGGED (see InitPubSubSchema) and is not listed here.
+// The order matches the write path (kv_meta first, then the data tables in
+// deleteKeyFromAllTables order). convertPersistence takes ACCESS EXCLUSIVE
+// locks in this order, so it cannot deadlock with live writers.
 var dataTables = []string{
-	"kv_strings", "kv_hashes", "kv_lists", "kv_sets", "kv_zsets", "kv_meta", "kv_hyperloglog",
+	"kv_meta", "kv_strings", "kv_hashes", "kv_lists", "kv_sets", "kv_zsets", "kv_hyperloglog",
 }
 
 // advisoryLockPersistence serializes LOGGED/UNLOGGED conversion across instances.
