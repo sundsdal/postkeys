@@ -134,6 +134,14 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- end }}
+            {{- with .Values.postgresql.synchronousCommit }}
+            - name: PG_SYNCHRONOUS_COMMIT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.postgresql.unloggedTables }}
+            - name: PG_UNLOGGED_TABLES
+              value: "true"
+            {{- end }}
             {{- if or .Values.redis.password.value .Values.redis.password.existingSecret.name }}
             - name: REDIS_PASSWORD
               valueFrom:

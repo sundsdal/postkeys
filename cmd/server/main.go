@@ -80,6 +80,17 @@ func main() {
 		}
 	}()
 
+	syncCommit, err := storage.NormalizeSynchronousCommit(cfg.PGSynchronousCommit)
+	if err != nil {
+		log.Fatalf("PG_SYNCHRONOUS_COMMIT: %v", err)
+	}
+	if syncCommit != "" && syncCommit != "on" {
+		log.Printf("WARNING: PG_SYNCHRONOUS_COMMIT=%s: a crash can lose the most recent commits (with off, up to ~3x wal_writer_delay, 600 ms by default)", syncCommit)
+	}
+	if cfg.PGUnloggedTables {
+		log.Printf("WARNING: PG_UNLOGGED_TABLES=true: data tables are UNLOGGED. After a crash or unclean shutdown PostgreSQL truncates them (all keys are lost), and they are NOT replicated to standbys. Use only as a pure cache.")
+	}
+
 	// Connect to PostgreSQL
 	log.Printf("Connecting to PostgreSQL at %s:%d...", cfg.PGHost, cfg.PGPort)
 	var store *storage.Store
@@ -98,6 +109,8 @@ func main() {
 			MaxConnIdleTime:   cfg.PGMaxConnIdleTime,
 			HealthCheckPeriod: cfg.PGHealthCheckPeriod,
 			PingTimeout:       cfg.PGPingTimeout,
+			SynchronousCommit: cfg.PGSynchronousCommit,
+			UnloggedTables:    cfg.PGUnloggedTables,
 		})
 		if err != nil {
 			return err
