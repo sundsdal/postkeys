@@ -115,7 +115,7 @@ Environment variables:
 | `PG_MAX_CONN_IDLE_TIME` | Maximum idle time before closing connection | `5m` |
 | `PG_HEALTH_CHECK_PERIOD` | Period between health checks on idle connections | `1m` |
 | `PG_PING_TIMEOUT` | How long to wait for the liveness ping of an idle pooled connection before dropping it and using another | `5s` |
-| `PG_SYNCHRONOUS_COMMIT` | Set `synchronous_commit` on every pooled connection: `on`, `off`, `local`, `remote_write` or `remote_apply`. Empty keeps the server default. Invalid values fail startup. See Durability modes | `` |
+| `PG_SYNCHRONOUS_COMMIT` | Set `synchronous_commit` on every pooled connection: `on`, `off`, `local`, `remote_write` or `remote_apply`. Empty keeps the server default. Invalid values fail startup. See Durability modes | (empty) |
 | `PG_UNLOGGED_TABLES` | Make the data tables UNLOGGED (faster writes, wiped after a crash, not replicated). Existing tables are converted on startup in either direction. See Durability modes | `false` |
 | `CACHE_ENABLED` | Enable in-memory cache (opt-in) | `false` |
 | `CACHE_TTL` | Cache TTL duration | `250ms` |
@@ -148,13 +148,13 @@ By default every write is durable once postkeys replies, like Redis AOF with `ap
 
 | Setting | After a crash | After failover to a standby | Redis equivalent |
 |---------|---------------|-----------------------------|------------------|
-| default | nothing lost | nothing lost | AOF always |
-| `PG_SYNCHRONOUS_COMMIT=off` | last ~600 ms of writes lost | replicated | AOF everysec |
+| default | nothing lost | replicated (async standbys may miss the last commits) | AOF always |
+| `PG_SYNCHRONOUS_COMMIT=off` | last ~600 ms of writes lost | replicated (same as default) | AOF everysec |
 | `PG_UNLOGGED_TABLES=true` | every key wiped | every key gone | no persistence, no replica |
 
 - `PG_SYNCHRONOUS_COMMIT=off`: PostgreSQL acknowledges a commit before the WAL is flushed. A crash loses at most the last ~3x `wal_writer_delay` (600 ms by default) of commits. There is no corruption and data still replicates to standbys. This is the recommended middle ground.
 - `PG_UNLOGGED_TABLES=true`: the data tables skip the WAL. After any crash or unclean shutdown PostgreSQL truncates them, so all keys are gone, not just recent writes. They are not replicated, so after a failover to a standby every key is gone. A clean shutdown or restart keeps the data. Use only for pure caches.
-- On startup postkeys converts existing tables to match the setting (`ALTER TABLE ... SET LOGGED` / `SET UNLOGGED`) and logs each conversion. This rewrites the table under an ACCESS EXCLUSIVE lock, so it can be slow on large tables. Indexes and the identity sequence follow the table on PostgreSQL 15 and later. Concurrent instances are serialized with an advisory lock.
+- On startup postkeys converts existing tables to match the setting (`ALTER TABLE ... SET LOGGED` / `SET UNLOGGED`) and logs each conversion. This rewrites the table under an ACCESS EXCLUSIVE lock, so it can be slow on large tables. Indexes follow their table. Concurrent instances are serialized with an advisory lock.
 - A warning is logged at startup when either setting is active.
 
 ### In-Memory Cache
