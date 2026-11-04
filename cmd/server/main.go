@@ -85,7 +85,7 @@ func main() {
 		log.Fatalf("PG_SYNCHRONOUS_COMMIT: %v", err)
 	}
 	if syncCommit != "" && syncCommit != "on" {
-		log.Printf("WARNING: PG_SYNCHRONOUS_COMMIT=%s: a crash can lose the most recent commits (with off, up to ~3x wal_writer_delay, 600 ms by default)", syncCommit)
+		log.Printf("WARNING: PG_SYNCHRONOUS_COMMIT=%s: a crash can lose the most recent commits (with off, up to ~3x wal_writer_delay, 600 ms by default). With off, commits also do not wait for synchronous standbys, so acknowledged writes can be lost on failover", syncCommit)
 	}
 	if cfg.PGUnloggedTables {
 		log.Printf("WARNING: PG_UNLOGGED_TABLES=true: data tables are UNLOGGED. After a crash or unclean shutdown PostgreSQL truncates them (all keys are lost), and they are NOT replicated to standbys. Use only as a pure cache.")

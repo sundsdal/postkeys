@@ -148,13 +148,14 @@ By default every write is durable once postkeys replies, like Redis AOF with `ap
 
 | Setting | After a crash | After failover to a standby | Redis equivalent |
 |---------|---------------|-----------------------------|------------------|
-| default | nothing lost | replicated (async standbys may miss the last commits) | AOF always |
-| `PG_SYNCHRONOUS_COMMIT=off` | last ~600 ms of writes lost | replicated (same as default) | AOF everysec |
+| default | nothing lost | nothing lost with synchronous standbys; async standbys may miss the last commits | AOF always |
+| `PG_SYNCHRONOUS_COMMIT=off` | last ~600 ms of writes lost | replicated asynchronously; acknowledged writes can be lost | AOF everysec |
 | `PG_UNLOGGED_TABLES=true` | every key wiped | every key gone | no persistence, no replica |
 
-- `PG_SYNCHRONOUS_COMMIT=off`: PostgreSQL acknowledges a commit before the WAL is flushed. A crash loses at most the last ~3x `wal_writer_delay` (600 ms by default) of commits. There is no corruption and data still replicates to standbys. This is the recommended middle ground.
+- `PG_SYNCHRONOUS_COMMIT=off`: PostgreSQL acknowledges a commit before the WAL is flushed. A crash loses at most the last ~3x `wal_writer_delay` (600 ms by default) of commits. There is no corruption. With `off` PostgreSQL does not wait for synchronous standbys either, so WAL still replicates but asynchronously, and acknowledged writes can be lost on promotion (default `on` waits for the standby's durable acknowledgement). See the [`synchronous_commit` docs](https://www.postgresql.org/docs/16/runtime-config-wal.html#GUC-SYNCHRONOUS-COMMIT). This is the recommended middle ground for a single node.
 - `PG_UNLOGGED_TABLES=true`: the data tables skip the WAL. After any crash or unclean shutdown PostgreSQL truncates them, so all keys are gone, not just recent writes. They are not replicated, so after a failover to a standby every key is gone. A clean shutdown or restart keeps the data. Use only for pure caches.
-- On startup postkeys converts existing tables to match the setting (`ALTER TABLE ... SET LOGGED` / `SET UNLOGGED`) and logs each conversion. This rewrites the table under an ACCESS EXCLUSIVE lock, so it can be slow on large tables. Indexes follow their table. Concurrent instances are serialized with an advisory lock.
+- On startup postkeys converts existing tables to match the setting (`ALTER TABLE ... SET LOGGED` / `SET UNLOGGED`) and logs each conversion. This rewrites the table under an ACCESS EXCLUSIVE lock, so it can be slow on large tables. Indexes follow their table. Concurrent instances are serialized with an advisory lock. The conversion locks all pending tables with `LOCK ... NOWAIT` and retries with backoff (up to 60s) while live traffic holds them, so it cannot deadlock; if the tables stay busy startup fails and is retried, and converting with traffic quiesced is the reliable option.
+- The Helm chart enables a `startupProbe` (default budget 10 minutes) so Kubernetes does not kill the pod during a slow conversion. Raise `startupProbe.failureThreshold` when converting large tables with `postgresql.unloggedTables`.
 - A warning is logged at startup when either setting is active.
 
 ### In-Memory Cache

@@ -56,6 +56,13 @@ spec:
                   - /bin/sh
                   - -c
                   - sleep {{ .Values.gracefulShutdown.preStopSleepSeconds | default 5 }}
+          {{- if .Values.startupProbe.enabled }}
+          startupProbe:
+            tcpSocket:
+              port: redis
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+          {{- end }}
           livenessProbe:
             tcpSocket:
               port: redis
