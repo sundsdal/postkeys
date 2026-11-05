@@ -56,6 +56,13 @@ spec:
                   - /bin/sh
                   - -c
                   - sleep {{ .Values.gracefulShutdown.preStopSleepSeconds | default 5 }}
+          {{- if .Values.startupProbe.enabled }}
+          startupProbe:
+            tcpSocket:
+              port: redis
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+          {{- end }}
           livenessProbe:
             tcpSocket:
               port: redis
@@ -133,6 +140,14 @@ spec:
             - name: PG_PING_TIMEOUT
               value: {{ . | quote }}
             {{- end }}
+            {{- end }}
+            {{- with .Values.postgresql.synchronousCommit }}
+            - name: PG_SYNCHRONOUS_COMMIT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.postgresql.unloggedTables }}
+            - name: PG_UNLOGGED_TABLES
+              value: "true"
             {{- end }}
             {{- if or .Values.redis.password.value .Values.redis.password.existingSecret.name }}
             - name: REDIS_PASSWORD

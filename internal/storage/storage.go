@@ -23,6 +23,8 @@ type Store struct {
 	ops           queryOps
 	sqlTraceLevel int // 0=off, 1=important, 2=most queries, 3=everything
 
+	persistenceLockBudget time.Duration
+
 	// cleanupCancel stops the background expired-keys cleanup loop. Close
 	// invokes it and waits on cleanupWG so the goroutine has actually exited
 	// before Close returns; this matters in tests (goleak) and in any host
@@ -48,6 +50,40 @@ type Config struct {
 	MaxConnIdleTime   time.Duration // Maximum time a connection can be idle before it's closed
 	HealthCheckPeriod time.Duration // Period between health checks on idle connections
 	PingTimeout       time.Duration // Max wait for the liveness ping of an idle connection
+
+	// SynchronousCommit sets the Postgres session parameter synchronous_commit
+	// on every pooled connection. Empty leaves the server default alone.
+	// Allowed: on, off, local, remote_write, remote_apply.
+	SynchronousCommit string
+
+	// UnloggedTables makes the data tables UNLOGGED (no WAL, not replicated,
+	// truncated after a crash). Existing tables are converted on startup in
+	// either direction to match this setting.
+	UnloggedTables bool
+
+	// PersistenceLockBudget bounds how long startup keeps retrying to lock the
+	// data tables for a LOGGED/UNLOGGED conversion while live traffic holds
+	// them. Zero means 60s.
+	PersistenceLockBudget time.Duration
+}
+
+// validSynchronousCommit lists the values accepted for SynchronousCommit.
+var validSynchronousCommit = []string{"on", "off", "local", "remote_write", "remote_apply"}
+
+// NormalizeSynchronousCommit validates a synchronous_commit value and returns
+// its canonical (lower-case) form. The empty string is valid and means
+// "leave the server default alone".
+func NormalizeSynchronousCommit(v string) (string, error) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return "", nil
+	}
+	for _, ok := range validSynchronousCommit {
+		if v == ok {
+			return v, nil
+		}
+	}
+	return "", fmt.Errorf("invalid synchronous_commit %q: must be one of %s", v, strings.Join(validSynchronousCommit, ", "))
 }
 
 // New creates a new Store with the given configuration
@@ -57,10 +93,19 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode,
 	)
 
+	syncCommit, err := NormalizeSynchronousCommit(cfg.SynchronousCommit)
+	if err != nil {
+		return nil, err
+	}
+
 	// Parse config and set pool parameters for better resilience
 	poolConfig, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	if syncCommit != "" {
+		poolConfig.ConnConfig.RuntimeParams["synchronous_commit"] = syncCommit
 	}
 
 	// Configure pool settings for handling master node switchovers
@@ -91,8 +136,8 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("failed to create pool: %w", err)
 	}
 
-	store := &Store{pool: pool, connStr: connStr, sqlTraceLevel: cfg.SQLTraceLevel}
-	if err := store.initSchema(ctx); err != nil {
+	store := &Store{pool: pool, connStr: connStr, sqlTraceLevel: cfg.SQLTraceLevel, persistenceLockBudget: cfg.PersistenceLockBudget}
+	if err := store.initSchema(ctx, cfg.UnloggedTables); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
@@ -130,7 +175,20 @@ func (s *Store) ConnString() string {
 	return s.connStr
 }
 
-func (s *Store) initSchema(ctx context.Context) error {
+// dataTables are the key tables that follow the UNLOGGED setting. pubsub_messages
+// is always UNLOGGED (see InitPubSubSchema) and is not listed here.
+// The order matches the write path (kv_meta first, then the data tables in
+// deleteKeyFromAllTables order). Lock order no longer matters for deadlock
+// safety: convertPersistence takes all its locks in one LOCK ... NOWAIT
+// statement and never waits for a table lock. The order is kept for consistency.
+var dataTables = []string{
+	"kv_meta", "kv_strings", "kv_hashes", "kv_lists", "kv_sets", "kv_zsets", "kv_hyperloglog",
+}
+
+// advisoryLockPersistence serializes LOGGED/UNLOGGED conversion across instances.
+const advisoryLockPersistence int64 = 0x706B5F7065727369 // "pk_persi" as int64
+
+func (s *Store) initSchema(ctx context.Context, unlogged bool) error {
 	schema := `
 		-- Main key-value store for string types (BYTEA for binary-safe storage)
 		CREATE TABLE IF NOT EXISTS kv_strings (
@@ -200,11 +258,157 @@ func (s *Store) initSchema(ctx context.Context) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_kv_hyperloglog_expires ON kv_hyperloglog(expires_at) WHERE expires_at IS NOT NULL;
 	`
-	_, err := s.pool.Exec(ctx, schema)
-	if err != nil {
+	if unlogged {
+		schema = strings.ReplaceAll(schema, "CREATE TABLE IF NOT EXISTS", "CREATE UNLOGGED TABLE IF NOT EXISTS")
+	}
+	if _, err := s.pool.Exec(ctx, schema); err != nil {
+		return err
+	}
+	if err := s.convertPersistence(ctx, unlogged); err != nil {
 		return err
 	}
 	return InitPubSubSchema(ctx, s.pool)
+}
+
+// tablesToConvert returns the data tables whose persistence differs from the
+// desired state. q is a pool or a transaction.
+func tablesToConvert(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, unlogged bool) ([]string, error) {
+	want := "p"
+	if unlogged {
+		want = "u"
+	}
+	var out []string
+	for _, t := range dataTables {
+		var persistence *string
+		if err := q.QueryRow(ctx,
+			"SELECT relpersistence::text FROM pg_class WHERE oid = to_regclass($1)", t,
+		).Scan(&persistence); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("read persistence of %s: %w", t, err)
+		}
+		if persistence != nil && *persistence != want {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// pgLockNotAvailable is SQLSTATE 55P03 (lock_not_available), raised by NOWAIT.
+const pgLockNotAvailable = "55P03"
+
+const (
+	defaultPersistenceLockBudget = 60 * time.Second
+	persistenceBackoffStart      = 50 * time.Millisecond
+	persistenceBackoffMax        = 2 * time.Second
+	persistenceBusyLogEvery      = 5 * time.Second
+)
+
+func isLockNotAvailable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgLockNotAvailable
+}
+
+// convertPersistence makes existing tables match the UNLOGGED setting. SET
+// LOGGED/UNLOGGED rewrites the table under an ACCESS EXCLUSIVE lock, so it
+// only runs when something differs.
+//
+// It must never wait for a table lock while holding another one, or it could
+// join a deadlock cycle with live commands or another instance's initSchema
+// (which lock tables in different orders). So each attempt takes the advisory
+// lock (one converter at a time), then locks all pending tables in a single
+// LOCK ... NOWAIT statement. If any table is busy the attempt is rolled back
+// and retried with jittered backoff until the budget runs out. Once all locks
+// are held the ALTERs cannot wait.
+func (s *Store) convertPersistence(ctx context.Context, unlogged bool) error {
+	pending, err := tablesToConvert(ctx, s.pool, unlogged)
+	if err != nil || len(pending) == 0 {
+		return err
+	}
+
+	budget := s.persistenceLockBudget
+	if budget <= 0 {
+		budget = defaultPersistenceLockBudget
+	}
+	start := time.Now()
+	deadline := start.Add(budget)
+	backoff := persistenceBackoffStart
+	var lastLog time.Time
+	attempts := 0
+	log.Printf("Persistence conversion needed for %s", strings.Join(pending, ", "))
+
+	for {
+		attempts++
+		busy, err := s.tryConvertPersistence(ctx, unlogged)
+		if err != nil {
+			return err
+		}
+		if !busy {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("persistence conversion gave up after %v (%d attempts): tables stayed busy with live traffic; "+
+				"converting with traffic quiesced (stop other instances and clients) is the reliable option",
+				time.Since(start).Round(time.Second), attempts)
+		}
+		if time.Since(lastLog) >= persistenceBusyLogEvery {
+			log.Printf("Persistence conversion waiting: data tables are busy (attempt %d, retrying with backoff, budget %v)", attempts, budget)
+			lastLog = time.Now()
+		}
+		// Jitter in [backoff/2, backoff].
+		d := backoff/2 + time.Duration(rand.Int63n(int64(backoff/2)+1))
+		t := time.NewTimer(d)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return ctx.Err()
+		case <-t.C:
+		}
+		if backoff *= 2; backoff > persistenceBackoffMax {
+			backoff = persistenceBackoffMax
+		}
+	}
+}
+
+// tryConvertPersistence makes one conversion attempt. It reports busy=true
+// (with nothing changed) when a table lock was not immediately available.
+func (s *Store) tryConvertPersistence(ctx context.Context, unlogged bool) (busy bool, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", advisoryLockPersistence); err != nil {
+		return false, fmt.Errorf("persistence advisory lock: %w", err)
+	}
+	pending, err := tablesToConvert(ctx, tx, unlogged)
+	if err != nil || len(pending) == 0 {
+		return false, err
+	}
+
+	idents := make([]string, len(pending))
+	for i, t := range pending {
+		idents[i] = pgx.Identifier{t}.Sanitize()
+	}
+	if _, err := tx.Exec(ctx, "LOCK TABLE "+strings.Join(idents, ", ")+" IN ACCESS EXCLUSIVE MODE NOWAIT"); err != nil {
+		if isLockNotAvailable(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("lock tables for persistence conversion: %w", err)
+	}
+
+	verb, state := "SET LOGGED", "LOGGED"
+	if unlogged {
+		verb, state = "SET UNLOGGED", "UNLOGGED"
+	}
+	for i, t := range pending {
+		log.Printf("Converting table %s to %s (rewrites the table under an ACCESS EXCLUSIVE lock; may be slow on large tables)", t, state)
+		if _, err := tx.Exec(ctx, "ALTER TABLE "+idents[i]+" "+verb); err != nil {
+			return false, fmt.Errorf("alter %s %s: %w", t, verb, err)
+		}
+	}
+	return false, tx.Commit(ctx)
 }
 
 // advisoryLockCleanup is a fixed advisory lock ID used to ensure only one

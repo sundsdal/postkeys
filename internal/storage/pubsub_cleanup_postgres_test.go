@@ -51,7 +51,7 @@ func TestPubSubCleanup(t *testing.T) {
 	}
 	defer pool.Close()
 	s := &Store{pool: pool}
-	if err := s.initSchema(ctx); err != nil {
+	if err := s.initSchema(ctx, false); err != nil {
 		t.Fatal(err)
 	}
 	_, err = pool.Exec(ctx, `INSERT INTO pubsub_messages(channel, message, expires_at)

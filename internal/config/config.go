@@ -34,6 +34,14 @@ type Config struct {
 	PGHealthCheckPeriod time.Duration // Period between health checks on idle connections
 	PGPingTimeout       time.Duration // Max wait for the liveness ping of an idle connection taken from the pool
 
+	// PGSynchronousCommit sets synchronous_commit on every pooled connection
+	// (on, off, local, remote_write, remote_apply). Empty keeps the server default.
+	PGSynchronousCommit string
+
+	// PGUnloggedTables makes the data tables UNLOGGED: fastest writes, but
+	// everything is lost after a crash and nothing is replicated.
+	PGUnloggedTables bool
+
 	// Cache configuration
 	CacheEnabled                 bool
 	CacheTTL                     time.Duration
@@ -91,6 +99,8 @@ func Load() *Config {
 		PGMaxConnIdleTime:            getEnvDuration("PG_MAX_CONN_IDLE_TIME", 5*time.Minute),
 		PGHealthCheckPeriod:          getEnvDuration("PG_HEALTH_CHECK_PERIOD", 1*time.Minute),
 		PGPingTimeout:                getEnvDuration("PG_PING_TIMEOUT", 5*time.Second),
+		PGSynchronousCommit:          getEnv("PG_SYNCHRONOUS_COMMIT", ""),
+		PGUnloggedTables:             getEnvBool("PG_UNLOGGED_TABLES", false),
 		CacheEnabled:                 getEnvBool("CACHE_ENABLED", false),
 		CacheTTL:                     getEnvDuration("CACHE_TTL", 250*time.Millisecond),
 		CacheMaxSize:                 getEnvInt("CACHE_MAX_SIZE", 10000),

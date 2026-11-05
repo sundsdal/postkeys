@@ -110,6 +110,16 @@ traceLevel: 0
 leaderElection:
   enabled: false
 
+# Startup probe. The LOGGED/UNLOGGED table conversion runs before the Redis
+# listener opens, so a slow rewrite would otherwise trip the liveness probe and
+# restart the pod mid-conversion. Liveness and readiness are disabled until this
+# succeeds. Budget = periodSeconds * failureThreshold (default 5s * 120 = 10 min).
+# Raise failureThreshold when converting large tables with postgresql.unloggedTables.
+startupProbe:
+  enabled: true
+  periodSeconds: 5
+  failureThreshold: 120
+
 # Redis server configuration
 redis:
   # Address to listen on (inside the container)
@@ -167,7 +177,19 @@ postgresql:
     healthCheckPeriod: "1m"
     # Max wait for the liveness ping of an idle connection before it is dropped
     pingTimeout: "5s"
-  
+
+  # Durability trade-offs (both off by default, see README "Durability modes").
+  # synchronous_commit for every pooled connection: "", on, off, local,
+  # remote_write, remote_apply. Empty keeps the PostgreSQL server default.
+  # "off" can lose the last ~600 ms of writes on a crash. It also does not wait
+  # for synchronous standbys: WAL replicates asynchronously, so acknowledged
+  # writes can be lost on failover.
+  synchronousCommit: ""
+  # Make the data tables UNLOGGED. After a crash PostgreSQL truncates them (all
+  # keys lost) and they are not replicated (all keys gone after failover).
+  # Pure-cache use only. Switching converts tables on startup (rewrite + lock).
+  unloggedTables: false
+
   # Use an existing secret for PostgreSQL credentials
   existingSecret:
     # Name of the existing secret
