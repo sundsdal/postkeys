@@ -112,6 +112,8 @@ func openSafeLibs(L *lua.LState) {
 		L.Call(1, 0)
 	}
 
+	openCJSON(L)
+
 	// Remove dangerous base functions that can access the filesystem
 	L.SetGlobal("dofile", lua.LNil)
 	L.SetGlobal("loadfile", lua.LNil)
@@ -245,6 +247,15 @@ func (le *luaExecutor) executeRedisCommand(L *lua.LState) resp.Value {
 	nargs := L.GetTop()
 	if nargs == 0 {
 		return resp.Err("ERR Please specify at least one argument for redis.call()")
+	}
+
+	// Redis command arguments must be strings or numbers, including the name.
+	for i := 1; i <= nargs; i++ {
+		switch L.Get(i).(type) {
+		case lua.LString, lua.LNumber:
+		default:
+			return resp.Err("ERR Lua redis lib command arguments must be strings or integers")
+		}
 	}
 
 	// Get command name
