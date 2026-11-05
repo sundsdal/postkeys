@@ -487,6 +487,7 @@ Renders a `PrometheusRule` CRD (requires `prometheus-operator`). All alerts are 
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
+| `updateStrategy.type` | Deployment upgrade strategy. Use Recreate once for the inline-only protocol migration, then RollingUpdate for compatible upgrades. | `RollingUpdate` |
 | `leaderElection.enabled` | Enable Kubernetes Lease based leader election. The leader patches its own pod with `postkeys/role=leader`; the Service selector routes traffic exclusively to that pod, guaranteeing cache coherency with multiple replicas. Automatically creates the required RBAC on pods and `coordination.k8s.io/leases`. | `false` |
 
 #### Graceful Shutdown
@@ -561,3 +562,43 @@ For deployment examples, including usage with CloudNativePG, see the [examples/]
 - **Cache**: Optional in-memory cache with distributed invalidation for multi-pod deployments
 - **Lua Scripts**: EVAL/EVALSHA scripting engine with script caching
 
+Pub/sub messages that fit in a PostgreSQL notification are sent inline. Larger
+messages are stored temporarily in an UNLOGGED PostgreSQL table and notifications
+carry a versioned reference with binary-safe channel metadata. Replicas fetch
+bodies only for local matching subscriptions; oversized channels use an indexed
+hash lookup and a metadata query first. Stored messages expire after five minutes.
+One elected sweeper drains at most 16 batches of 1000 expired rows per cleanup cycle.
+
+Each subscribed connection has its own lazy output FIFO and writer, so a stalled
+reader does not block other clients. Queued and in-flight output counts toward a
+32 MiB / 8192-entry limit per client; exceeding either limit disconnects that
+client. One oversized entry is allowed when its output buffer is otherwise empty,
+so channel and message fields still support the RESP 512 MiB limit each. Delivery
+preserves each client's order across exact and pattern subscriptions. Unsubscribe
+invalidates that generation's queued routes before its acknowledgement.
+
+Ingress uses bounded backpressure rather than dropping inline notifications.
+PostgreSQL buffers notifications while the listener waits for local capacity.
+Up to 256 referenced messages await or hold fetched data. Four dedicated fetch
+connections reserve channel and body bytes in notification order, at most 64 MiB
+total; one oversized reference is admitted only when no other referenced bytes
+are reserved. Inline traffic can proceed while references wait for this budget;
+when the reference backlog is full, ingress backpressures globally. Connection
+loss, PostgreSQL crash recovery and failed fetches can still lose pub/sub messages;
+there is no replay.
+
+The Helm chart defaults to `updateStrategy.type=RollingUpdate` for compatible
+upgrades. For the first upgrade from the old inline-only protocol, keep the
+coordinated migration: stop all old instances sharing the database before any new
+instance publishes large messages. Temporarily use
+`--set updateStrategy.type=Recreate` for that upgrade, then restore RollingUpdate
+for later compatible releases. Recreate causes downtime and coordinates only one
+Deployment; multiple Deployments/releases sharing a database require manual
+coordination. The `!pk1:` reference prefix makes old decoders reject references
+rather than emit fake empty messages, but mixed-version large delivery is unsupported.
+
+For pre-release installations that already created a logged `pubsub_messages`
+table, the initializer leaves it intact. During coordinated shutdown run
+`ALTER TABLE pubsub_messages SET UNLOGGED` in the configured schema before
+restarting instances. It takes an exclusive table lock; key/value tables remain
+logged and durable.

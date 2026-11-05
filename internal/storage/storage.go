@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"strings"
 	"sync"
@@ -200,12 +201,17 @@ func (s *Store) initSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_kv_hyperloglog_expires ON kv_hyperloglog(expires_at) WHERE expires_at IS NOT NULL;
 	`
 	_, err := s.pool.Exec(ctx, schema)
-	return err
+	if err != nil {
+		return err
+	}
+	return InitPubSubSchema(ctx, s.pool)
 }
 
 // advisoryLockCleanup is a fixed advisory lock ID used to ensure only one
 // instance runs expired key cleanup at a time across multiple replicas.
 const advisoryLockCleanup int64 = 0x706B5F636C65616E // "pk_clean" as int64
+// A separate election keeps pub/sub cleanup independent of key cleanup.
+const advisoryLockPubSubCleanup int64 = 0x706b5f7075627375
 
 func (s *Store) cleanupExpiredKeys(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
@@ -220,8 +226,39 @@ func (s *Store) cleanupExpiredKeys(ctx context.Context) {
 			runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			s.deleteExpiredKeys(runCtx)
 			cancel()
+			runCtx, cancel = context.WithTimeout(ctx, 2*time.Second)
+			if err := s.deleteExpiredPubSubMessages(runCtx); err != nil && ctx.Err() == nil {
+				log.Printf("pubsub message cleanup failed: %v", err)
+			}
+			cancel()
 		}
 	}
+}
+
+// deleteExpiredPubSubMessages elects one sweeper and drains a bounded number of
+// batches. The cap prevents a sustained producer from monopolizing a transaction.
+func (s *Store) deleteExpiredPubSubMessages(ctx context.Context) error {
+	return s.execTx(ctx, func(tx pgx.Tx) error {
+		var acquired bool
+		if err := tx.QueryRow(ctx, "SELECT pg_try_advisory_xact_lock($1)", advisoryLockPubSubCleanup).Scan(&acquired); err != nil {
+			return err
+		}
+		if !acquired {
+			return nil
+		}
+		for batch := 0; batch < 16; batch++ {
+			result, err := tx.Exec(ctx, `DELETE FROM pubsub_messages WHERE id IN (
+    SELECT id FROM pubsub_messages WHERE expires_at <= statement_timestamp()
+    ORDER BY expires_at, id LIMIT $1 FOR UPDATE SKIP LOCKED)`, cleanupBatch)
+			if err != nil {
+				return err
+			}
+			if result.RowsAffected() < cleanupBatch {
+				break
+			}
+		}
+		return nil
+	})
 }
 
 // cleanupBatch bounds how many keys one cleanup cycle looks at per source.
