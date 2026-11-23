@@ -86,7 +86,7 @@ Scripts have access to:
 ## Requirements
 
 - Go 1.27+
-- PostgreSQL 16+
+- PostgreSQL 16+ (tested on 16, 17 and 18; `GETSET` and `HSET` use faster SQL on 18)
 
 ## Installation
 
@@ -117,6 +117,8 @@ Environment variables:
 | `PG_PING_TIMEOUT` | How long to wait for the liveness ping of an idle pooled connection before dropping it and using another | `5s` |
 | `PG_SYNCHRONOUS_COMMIT` | Set `synchronous_commit` on every pooled connection: `on`, `off`, `local`, `remote_write` or `remote_apply`. Empty keeps the server default. Invalid values fail startup. See Durability modes | (empty) |
 | `PG_UNLOGGED_TABLES` | Make the data tables UNLOGGED (faster writes, wiped after a crash, not replicated). Existing tables are converted on startup in either direction. See Durability modes | `false` |
+
+| `PG_TRANSACTION_TIMEOUT` | PostgreSQL 17+: the server ends a session whose transaction or single statement runs longer than this. `0` turns it off. Ignored on PostgreSQL 16 | `60s` |
 | `CACHE_ENABLED` | Enable in-memory cache (opt-in) | `false` |
 | `CACHE_TTL` | Cache TTL duration | `250ms` |
 | `CACHE_MAX_SIZE` | Maximum cached entries | `10000` |
@@ -138,6 +140,7 @@ postkeys uses a configurable connection pool to manage PostgreSQL connections ef
 - **Connection lifetime** (`PG_MAX_CONN_LIFETIME`): Connections are automatically closed and recreated after a maximum lifetime, ensuring fresh connections during database switchovers
 - **Idle timeout** (`PG_MAX_CONN_IDLE_TIME`): Idle connections are closed to free resources
 - **Ping timeout** (`PG_PING_TIMEOUT`): A connection that sat idle is pinged before use; if the ping does not answer in time the connection is dropped instead of hanging the command
+- **Transaction timeout** (`PG_TRANSACTION_TIMEOUT`, PostgreSQL 17+): Sets `transaction_timeout` on every pooled connection, so a stuck transaction cannot hold its key locks forever
 - **Pool sizing** (`PG_MIN_CONNS`, `PG_MAX_CONNS`): Controls the minimum and maximum number of connections maintained
 
 These settings work together with the existing reconnection logic in LISTEN/NOTIFY components (pub/sub, cache invalidation, list blocking operations) to provide resilience during PostgreSQL master node switchovers or network disruptions.

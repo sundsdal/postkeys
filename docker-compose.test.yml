@@ -1,10 +1,14 @@
 services:
   postgres:
-    image: postgres:16
+    image: postgres:${PG_VERSION:-16}
     shm_size: 128mb
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: testingpassword
+      # Inside the tmpfs below for every major. Images up to 17 declare a
+      # VOLUME at /var/lib/postgresql/data, which would put the default
+      # data dir on disk instead.
+      PGDATA: /var/lib/postgresql/pgdata
     ports:
       - "5789:5432"
     healthcheck:
@@ -12,8 +16,10 @@ services:
       interval: 2s
       timeout: 5s
       retries: 10
+    # Parent dir: postgres:18+ keeps PGDATA in /var/lib/postgresql/<major>/docker
+    # and refuses to start with a mount at /var/lib/postgresql/data.
     tmpfs:
-      - /var/lib/postgresql/data
+      - /var/lib/postgresql
 
   redis:
     image: redis:7

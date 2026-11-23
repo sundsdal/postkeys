@@ -96,21 +96,22 @@ func main() {
 	var store *storage.Store
 	if err := retryStartup(ctx, "PostgreSQL connect", func(ctx context.Context) error {
 		s, err := storage.New(ctx, storage.Config{
-			Host:              cfg.PGHost,
-			Port:              cfg.PGPort,
-			User:              cfg.PGUser,
-			Password:          cfg.PGPassword,
-			Database:          cfg.PGDatabase,
-			SSLMode:           cfg.PGSSLMode,
-			SQLTraceLevel:     cfg.SQLTraceLevel,
-			MaxConns:          cfg.PGMaxConns,
-			MinConns:          cfg.PGMinConns,
-			MaxConnLifetime:   cfg.PGMaxConnLifetime,
-			MaxConnIdleTime:   cfg.PGMaxConnIdleTime,
-			HealthCheckPeriod: cfg.PGHealthCheckPeriod,
-			PingTimeout:       cfg.PGPingTimeout,
-			SynchronousCommit: cfg.PGSynchronousCommit,
-			UnloggedTables:    cfg.PGUnloggedTables,
+			Host:               cfg.PGHost,
+			Port:               cfg.PGPort,
+			User:               cfg.PGUser,
+			Password:           cfg.PGPassword,
+			Database:           cfg.PGDatabase,
+			SSLMode:            cfg.PGSSLMode,
+			SQLTraceLevel:      cfg.SQLTraceLevel,
+			MaxConns:           cfg.PGMaxConns,
+			MinConns:           cfg.PGMinConns,
+			MaxConnLifetime:    cfg.PGMaxConnLifetime,
+			MaxConnIdleTime:    cfg.PGMaxConnIdleTime,
+			HealthCheckPeriod:  cfg.PGHealthCheckPeriod,
+			PingTimeout:        cfg.PGPingTimeout,
+			SynchronousCommit:  cfg.PGSynchronousCommit,
+			UnloggedTables:     cfg.PGUnloggedTables,
+			TransactionTimeout: cfg.PGTransactionTimeout,
 		})
 		if err != nil {
 			return err
