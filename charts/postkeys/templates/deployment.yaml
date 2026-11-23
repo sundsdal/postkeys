@@ -140,6 +140,10 @@ spec:
             - name: PG_PING_TIMEOUT
               value: {{ . | quote }}
             {{- end }}
+            {{- if hasKey .Values.postgresql.pool "transactionTimeout" }}
+            - name: PG_TRANSACTION_TIMEOUT
+              value: {{ .Values.postgresql.pool.transactionTimeout | quote }}
+            {{- end }}
             {{- end }}
             {{- with .Values.postgresql.synchronousCommit }}
             - name: PG_SYNCHRONOUS_COMMIT

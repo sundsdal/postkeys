@@ -27,12 +27,13 @@ type Config struct {
 	PGSSLMode  string
 
 	// PostgreSQL connection pool configuration
-	PGMaxConns          int           // Maximum number of connections in the pool
-	PGMinConns          int           // Minimum number of connections in the pool
-	PGMaxConnLifetime   time.Duration // Maximum lifetime of a connection before it's closed
-	PGMaxConnIdleTime   time.Duration // Maximum time a connection can be idle before it's closed
-	PGHealthCheckPeriod time.Duration // Period between health checks on idle connections
-	PGPingTimeout       time.Duration // Max wait for the liveness ping of an idle connection taken from the pool
+	PGMaxConns           int           // Maximum number of connections in the pool
+	PGMinConns           int           // Minimum number of connections in the pool
+	PGMaxConnLifetime    time.Duration // Maximum lifetime of a connection before it's closed
+	PGMaxConnIdleTime    time.Duration // Maximum time a connection can be idle before it's closed
+	PGHealthCheckPeriod  time.Duration // Period between health checks on idle connections
+	PGPingTimeout        time.Duration // Max wait for the liveness ping of an idle connection taken from the pool
+	PGTransactionTimeout time.Duration // PostgreSQL 17+ transaction_timeout per connection; 0 disables
 
 	// PGSynchronousCommit sets synchronous_commit on every pooled connection
 	// (on, off, local, remote_write, remote_apply). Empty keeps the server default.
@@ -84,23 +85,25 @@ type Config struct {
 // Load loads configuration from environment variables
 func Load() *Config {
 	return &Config{
-		RedisAddr:                    getEnv("REDIS_ADDR", ":6379"),
-		RedisPassword:                getEnv("REDIS_PASSWORD", ""),
-		MetricsAddr:                  getEnv("METRICS_ADDR", ":9090"),
-		PGHost:                       getEnv("PG_HOST", "localhost"),
-		PGPort:                       getEnvInt("PG_PORT", 5432),
-		PGUser:                       getEnv("PG_USER", "postgres"),
-		PGPassword:                   getEnv("PG_PASSWORD", "postgres"),
-		PGDatabase:                   getEnv("PG_DATABASE", "postkeys"),
-		PGSSLMode:                    getEnv("PG_SSLMODE", "disable"),
-		PGMaxConns:                   getEnvInt("PG_MAX_CONNS", 10),
-		PGMinConns:                   getEnvInt("PG_MIN_CONNS", 2),
-		PGMaxConnLifetime:            getEnvDuration("PG_MAX_CONN_LIFETIME", 30*time.Minute),
-		PGMaxConnIdleTime:            getEnvDuration("PG_MAX_CONN_IDLE_TIME", 5*time.Minute),
-		PGHealthCheckPeriod:          getEnvDuration("PG_HEALTH_CHECK_PERIOD", 1*time.Minute),
-		PGPingTimeout:                getEnvDuration("PG_PING_TIMEOUT", 5*time.Second),
-		PGSynchronousCommit:          getEnv("PG_SYNCHRONOUS_COMMIT", ""),
-		PGUnloggedTables:             getEnvBool("PG_UNLOGGED_TABLES", false),
+		RedisAddr:           getEnv("REDIS_ADDR", ":6379"),
+		RedisPassword:       getEnv("REDIS_PASSWORD", ""),
+		MetricsAddr:         getEnv("METRICS_ADDR", ":9090"),
+		PGHost:              getEnv("PG_HOST", "localhost"),
+		PGPort:              getEnvInt("PG_PORT", 5432),
+		PGUser:              getEnv("PG_USER", "postgres"),
+		PGPassword:          getEnv("PG_PASSWORD", "postgres"),
+		PGDatabase:          getEnv("PG_DATABASE", "postkeys"),
+		PGSSLMode:           getEnv("PG_SSLMODE", "disable"),
+		PGMaxConns:          getEnvInt("PG_MAX_CONNS", 10),
+		PGMinConns:          getEnvInt("PG_MIN_CONNS", 2),
+		PGMaxConnLifetime:   getEnvDuration("PG_MAX_CONN_LIFETIME", 30*time.Minute),
+		PGMaxConnIdleTime:   getEnvDuration("PG_MAX_CONN_IDLE_TIME", 5*time.Minute),
+		PGHealthCheckPeriod: getEnvDuration("PG_HEALTH_CHECK_PERIOD", 1*time.Minute),
+		PGPingTimeout:       getEnvDuration("PG_PING_TIMEOUT", 5*time.Second),
+		PGSynchronousCommit: getEnv("PG_SYNCHRONOUS_COMMIT", ""),
+		PGUnloggedTables:    getEnvBool("PG_UNLOGGED_TABLES", false),
+
+		PGTransactionTimeout:         getEnvDuration("PG_TRANSACTION_TIMEOUT", 60*time.Second),
 		CacheEnabled:                 getEnvBool("CACHE_ENABLED", false),
 		CacheTTL:                     getEnvDuration("CACHE_TTL", 250*time.Millisecond),
 		CacheMaxSize:                 getEnvInt("CACHE_MAX_SIZE", 10000),
