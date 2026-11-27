@@ -112,6 +112,7 @@ func main() {
 			SynchronousCommit:  cfg.PGSynchronousCommit,
 			UnloggedTables:     cfg.PGUnloggedTables,
 			TransactionTimeout: cfg.PGTransactionTimeout,
+			CleanupInterval:    cfg.CleanupInterval,
 		})
 		if err != nil {
 			return err
