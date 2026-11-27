@@ -80,6 +80,9 @@ type Config struct {
 	// BlockingPollInterval is the fallback poll interval for BLPOP/BRPOP when
 	// no LISTEN/NOTIFY notifier is available. Ignored on the notify path.
 	BlockingPollInterval time.Duration
+
+	// CleanupInterval is how often expired keys and pub/sub messages are swept.
+	CleanupInterval time.Duration
 }
 
 // Load loads configuration from environment variables
@@ -118,6 +121,7 @@ func Load() *Config {
 		PodName:                      getEnv("POD_NAME", ""),
 		PodNamespace:                 getEnv("POD_NAMESPACE", ""),
 		BlockingPollInterval:         getEnvDuration("BLOCKING_POLL_INTERVAL", 100*time.Millisecond),
+		CleanupInterval:              getEnvDuration("CLEANUP_INTERVAL", time.Second),
 	}
 }
 

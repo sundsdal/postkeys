@@ -19,10 +19,11 @@ import (
 
 // Store provides PostgreSQL-backed storage for Redis operations
 type Store struct {
-	pool          *pgxpool.Pool
-	connStr       string
-	ops           queryOps
-	sqlTraceLevel int // 0=off, 1=important, 2=most queries, 3=everything
+	cleanupInterval time.Duration
+	pool            *pgxpool.Pool
+	connStr         string
+	ops             queryOps
+	sqlTraceLevel   int // 0=off, 1=important, 2=most queries, 3=everything
 
 	persistenceLockBudget time.Duration
 
@@ -51,6 +52,11 @@ type Config struct {
 	MaxConnIdleTime   time.Duration // Maximum time a connection can be idle before it's closed
 	HealthCheckPeriod time.Duration // Period between health checks on idle connections
 	PingTimeout       time.Duration // Max wait for the liveness ping of an idle connection
+
+	// CleanupInterval is how often the elected sweeper removes expired keys and
+	// pub/sub messages. Reads already treat expired keys as absent, so a longer
+	// interval only delays garbage collection. 0 means one second.
+	CleanupInterval time.Duration
 
 	// TransactionTimeout ends any session whose transaction (or single
 	// statement) runs longer than this. Only applied on PostgreSQL 17+, where
@@ -160,7 +166,12 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("failed to read server version: %w", err)
 	}
 
+	cleanupInterval := cfg.CleanupInterval
+	if cleanupInterval <= 0 {
+		cleanupInterval = time.Second
+	}
 	store := &Store{
+		cleanupInterval:       cleanupInterval,
 		pool:                  pool,
 		connStr:               connStr,
 		ops:                   queryOps{serverVersion: serverVersion},
@@ -459,7 +470,7 @@ const advisoryLockCleanup int64 = 0x706B5F636C65616E // "pk_clean" as int64
 const advisoryLockPubSubCleanup int64 = 0x706b5f7075627375
 
 func (s *Store) cleanupExpiredKeys(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(s.cleanupInterval)
 	defer ticker.Stop()
 
 	for {
